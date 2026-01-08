@@ -1,7 +1,10 @@
 import glob
-import boto3
+from tempfile import NamedTemporaryFile
+from contextlib import contextmanager
+
 import awswrangler as wr
-from smart_open.s3 import parse_uri, open_uri
+import boto3
+from smart_open.s3 import parse_uri
 from joblib import register_store_backend
 from joblib._store_backends import StoreBackendBase, StoreBackendMixin, CacheItemInfo
 
@@ -9,8 +12,25 @@ from joblib._store_backends import StoreBackendBase, StoreBackendMixin, CacheIte
 class S3StoreBackend(StoreBackendBase, StoreBackendMixin):
     _item_exists = staticmethod(wr.s3.does_object_exist)
 
+    @contextmanager
     def _open_item(self, location, mode):
-        return open_uri(location, mode, dict(client=self.client))
+        # For simplicity, we only support the modes that joblib uses.
+        if mode == "rb":
+            with NamedTemporaryFile("rb") as f:
+                # Translate the exception to something that joblib
+                # understands.
+                try:
+                    wr.s3.download(location, f.name)
+                except Exception:
+                    raise FileNotFoundError(location)
+                yield f
+        elif mode == "wb":
+            with NamedTemporaryFile("w+b") as f:
+                yield f
+                f.seek(0)
+                wr.s3.upload(f, location)
+        else:
+            raise ValueError("mode must be 'rb' or 'wb'")
 
     def _move_item(self, src_uri, dst_uri):
         # awswrangler only includes a fancy move/rename method that actually
